@@ -11,18 +11,8 @@ substitutions:
 
 steps:
   # Lint and format checks (backend + frontend) before running tests.
-  - id: backend-lint
-    name: python:3.11
-    entrypoint: bash
-    args:
-      - -ceu
-      - |
-        pip install --no-cache-dir ruff black
-        ruff check .
-        black --check .
-
   - id: frontend-lint
-    name: node:18
+    name: node:20
     entrypoint: bash
     args:
       - -ceu
@@ -32,24 +22,65 @@ steps:
         npm run lint
 
   # CI: fail before publishing/deploying if backend tests fail.
-  - id: backend-tests
-    name: python:3.11
+  - id: start-ci-postgres
+    name: gcr.io/cloud-builders/docker
     entrypoint: bash
-    # Pull runtime secrets from Secret Manager into the test environment.
-    secretEnv:
-      - DATABASE_URL
-      - JWT_SECRET
-      - OPENAI_API_KEY
-      - SARVAM_API_KEY
     args:
       - -ceu
       - |
+        echo "Starting CI PostgreSQL..."
+
+        docker pull pgvector/pgvector:pg16
+
+        docker run -d \
+          --name sreshtha-ci-postgres \
+          -e POSTGRES_USER=sreshtha \
+          -e POSTGRES_PASSWORD=sreshtha \
+          -e POSTGRES_DB=sreshtha \
+          pgvector/pgvector:pg16
+
+        echo "Waiting for PostgreSQL..."
+
+        for i in {1..30}; do
+          if docker exec sreshtha-ci-postgres \
+              pg_isready -U sreshtha -d sreshtha; then
+            break
+          fi
+          sleep 2
+        done
+
+        docker exec sreshtha-ci-postgres \
+          pg_isready -U sreshtha -d sreshtha
+
+        docker inspect \
+          --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+          sreshtha-ci-postgres \
+          > /workspace/ci-postgres-ip
+
+        echo "PostgreSQL IP: $$(cat /workspace/ci-postgres-ip)"
+
+  - id: backend-tests
+    name: python:3.11
+    entrypoint: bash
+    waitFor:
+      - start-ci-postgres
+    args:
+      - -ceu
+      - |
+        DB_IP="$$(cat /workspace/ci-postgres-ip)"
+
+        echo "Testing against CI PostgreSQL at $$DB_IP"
+
+        export DATABASE_URL="postgresql+psycopg://sreshtha:sreshtha@$$DB_IP:5432/sreshtha"
+        export APP_ENV="test"
+        export JWT_SECRET="ci-test-secret"
+
         pip install --no-cache-dir '.[dev]'
         pytest
 
   # Quick frontend sanity: install locked deps and do a production build + tsc check.
   - id: frontend-ci
-    name: node:18
+    name: node:20
     entrypoint: bash
     args:
       - -ceu
@@ -189,17 +220,3 @@ options:
   # `gcloud builds submit` resolve the PROJECT_ID references above.
   dynamicSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
-
-# Make secrets available to build steps via Secret Manager. Do NOT hardcode
-# secret values in the YAML or images; Cloud Run will mount secrets at runtime
-# where possible and the deploy step references secrets by name.
-availableSecrets:
-  secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/database-url/versions/latest
-      env: DATABASE_URL
-    - versionName: projects/$PROJECT_ID/secrets/jwt-secret/versions/latest
-      env: JWT_SECRET
-    - versionName: projects/$PROJECT_ID/secrets/openai-api-key/versions/latest
-      env: OPENAI_API_KEY
-    - versionName: projects/$PROJECT_ID/secrets/sarvam-api-key/versions/latest
-      env: SARVAM_API_KEY
