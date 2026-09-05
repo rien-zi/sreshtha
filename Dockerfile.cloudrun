@@ -20,8 +20,9 @@ COPY pyproject.toml ./
 RUN pip install --upgrade pip && pip install .
 
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 COPY data ./data
-COPY policy_and_faq.md ./policy_and_faq.md
 COPY cloudrun-entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 

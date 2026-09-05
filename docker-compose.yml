@@ -42,6 +42,8 @@ services:
     build: ./frontend
     depends_on:
       - app
+    environment:
+      API_UPSTREAM: http://app:8000
     ports:
       - "5173:80"
 
